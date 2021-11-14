@@ -59,6 +59,8 @@ pub struct FloatInstruction {
     pub operands_f32: [f32; 64],
     pub recover_mxcsr: u32,
     pub init_mxcsr: u32,
+    pub saved_mxcsr: u32,
+    pub previous_mxcsr: u32,
     pub current_mxcsr: u32,
     pub evaluate: Option<InstructionEvaluate>,
     rip: u64,
@@ -72,6 +74,8 @@ impl Default for FloatInstruction {
             operands_f32: [0.0; 64],
             recover_mxcsr: 0,
             init_mxcsr: 0,
+            saved_mxcsr: 0,
+            previous_mxcsr: 0,
             current_mxcsr: 0,
             evaluate: None,
             rip: 0,
@@ -82,6 +86,24 @@ impl Default for FloatInstruction {
 extern "C" {
     pub fn fdiv64_no_exception(instruction: &mut FloatInstruction);
     pub fn fdiv32_no_exception(instruction: &mut FloatInstruction);
+    pub fn test_double_div64_c(
+        instruction: &mut FloatInstruction,
+        a: *const f64,
+        b: *const f64,
+        c: *mut f64,
+        csr: *mut u32,
+        len: usize,
+        count: usize,
+    );
+    pub fn test_double_div32_c(
+        instruction: &mut FloatInstruction,
+        a: *const f32,
+        b: *const f32,
+        c: *mut f32,
+        csr: *mut u32,
+        len: usize,
+        count: usize,
+    );
 }
 
 #[no_mangle]
@@ -123,31 +145,31 @@ fn test_double_div64(
     unsafe {
         instruction.current_mxcsr = instruction.init_mxcsr;
         _mm_setcsr(instruction.init_mxcsr);
-    }
-    if let Some(f) = instruction.evaluate {
-        for _ in 0..count {
-            for i in 0..ops {
-                instruction.operands_f64[1] = a[i];
-                instruction.operands_f64[2] = b[i];
-                unsafe {
-                    f(instruction);
-                }
-                c[i] = instruction.operands_f64[0];
-                csr[i] = instruction.current_mxcsr;
-            }
-        }
-    }
-    unsafe {
+        test_double_div64_c(
+            instruction,
+            a.as_ptr(),
+            b.as_ptr(),
+            c.as_mut_ptr(),
+            csr.as_mut_ptr(),
+            ops,
+            count,
+        );
+        instruction.current_mxcsr = _mm_getcsr();
         _mm_setcsr(instruction.recover_mxcsr);
     }
     let mops = (ops * count) as f64 / 1024.0 / 1024.8;
     let mflops = mops / now.elapsed().as_secs_f64();
-    println!("recover_mxcsr: {}", instruction.recover_mxcsr);
+    println!("mxcsr, init:saved:prev:current:recover {}:{}:{}:{}:{}",
+        instruction.init_mxcsr, instruction.saved_mxcsr,
+        instruction.previous_mxcsr,
+        instruction.current_mxcsr, instruction.recover_mxcsr);
     println!(
-        "final f64 csr: {} mflops:{} c:{}",
-        instruction.current_mxcsr,
+        "final f64 csr: {},{} mflops:{} c:{},{}",
+        csr.last().unwrap(),
+        csr[1024 * 1024],
         mflops,
-        c[1024 * 1024]
+        c[1024 * 1024],
+        c[0]
     );
 }
 
@@ -164,31 +186,32 @@ fn test_double_div32(
     unsafe {
         instruction.current_mxcsr = instruction.init_mxcsr;
         _mm_setcsr(instruction.init_mxcsr);
-    }
-    if let Some(f) = instruction.evaluate {
-        for _ in 0..count {
-            for i in 0..ops {
-                instruction.operands_f32[1] = a[i];
-                instruction.operands_f32[2] = b[i];
-                unsafe {
-                    f(instruction);
-                }
-                c[i] = instruction.operands_f32[0];
-                csr[i] = instruction.current_mxcsr;
-            }
-        }
-    }
-    unsafe {
+        test_double_div32_c(
+            instruction,
+            a.as_ptr(),
+            b.as_ptr(),
+            c.as_mut_ptr(),
+            csr.as_mut_ptr(),
+            ops,
+            count,
+        );
+        instruction.current_mxcsr = _mm_getcsr();
         _mm_setcsr(instruction.recover_mxcsr);
     }
     let mops = (ops * count) as f64 / 1024.0 / 1024.8;
     let mflops = mops / now.elapsed().as_secs_f64();
-    println!("recover_mxcsr: {}", instruction.recover_mxcsr);
+    println!("mxcsr, init:saved:prev:current:recover {}:{}:{}:{}:{}",
+        instruction.init_mxcsr, instruction.saved_mxcsr,
+        instruction.previous_mxcsr,
+        instruction.current_mxcsr, instruction.recover_mxcsr);
+
     println!(
-        "final f32 csr: {} mflops:{} c:{}",
-        instruction.current_mxcsr,
+        "final f32 csr: {},{} mflops:{} c:{},{}",
+        csr.last().unwrap(),
+        csr[1024 * 1024],
         mflops,
-        c[1024 * 1024]
+        c[1024 * 1024],
+        c[0]
     );
 }
 
@@ -200,7 +223,7 @@ fn main() {
         asm! {
             "fninit"
         };
-        instruction.init_mxcsr = 0x80;
+        instruction.init_mxcsr = 0x0;
         println!("use mxcsr:{}", instruction.init_mxcsr);
     }
     let ops = 1024 * 1024 * 64;
@@ -226,46 +249,22 @@ fn main() {
     for _ in 0..8 {
         println!("no mxcsr");
         instruction.init_mxcsr = 0;
-        instruction.evaluate = Some(fdiv64_no_exception);
         test_double_div64(
             &mut instruction,
             a64.as_slice(),
             b64.as_slice(),
             c64.as_mut_slice(),
             csr.as_mut_slice(),
-            8,
+            16,
         );
         instruction.init_mxcsr = 0;
-        instruction.evaluate = Some(fdiv32_no_exception);
         test_double_div32(
             &mut instruction,
             a32.as_slice(),
             b32.as_slice(),
             c32.as_mut_slice(),
             csr.as_mut_slice(),
-            8,
-        );
-
-        println!("set/get mxcsr");
-        instruction.init_mxcsr = 0x1F80;
-        instruction.evaluate = Some(fdiv64);
-        test_double_div64(
-            &mut instruction,
-            a64.as_slice(),
-            b64.as_slice(),
-            c64.as_mut_slice(),
-            csr.as_mut_slice(),
-            8,
-        );
-        instruction.init_mxcsr = 0x1F80;
-        instruction.evaluate = Some(fdiv32);
-        test_double_div32(
-            &mut instruction,
-            a32.as_slice(),
-            b32.as_slice(),
-            c32.as_mut_slice(),
-            csr.as_mut_slice(),
-            8,
+            16,
         );
     }
 }

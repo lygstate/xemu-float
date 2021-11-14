@@ -17,79 +17,125 @@ struct FloatInstruction
     float operands_f32[64];
     uint32_t recover_mxcsr;
     uint32_t init_mxcsr;
+    uint32_t saved_mxcsr;
+    uint32_t previous_mxcsr;
     uint32_t current_mxcsr;
     InstructionEvaluate evaluate;
     uint64_t rip;
     uint64_t rsp;
 };
 
-inline unsigned long float_handle_exception(
-    struct _EXCEPTION_POINTERS *ep,
-    struct FloatInstruction *instruction)
+inline unsigned long float_handle_exception(unsigned long code)
 {
-    unsigned long code = ep->ExceptionRecord->ExceptionCode;
-    int mask = 0;
-    if (code == EXCEPTION_FLT_INEXACT_RESULT)
+    if (code >= STATUS_FLOAT_DENORMAL_OPERAND && code <= STATUS_FLOAT_UNDERFLOW)
     {
-        mask = 1 << 12;
-        instruction->current_mxcsr |= 1 << 5;
-    }
-    else if (code == EXCEPTION_FLT_UNDERFLOW)
-    {
-        mask = 1 << 11;
-        instruction->current_mxcsr |= 1 << 4;
-    }
-    else if (code == EXCEPTION_FLT_OVERFLOW)
-    {
-        mask = 1 << 10;
-        instruction->current_mxcsr |= 1 << 3;
-    }
-    else if (code == EXCEPTION_FLT_DIVIDE_BY_ZERO)
-    {
-        mask = 1 << 9;
-        instruction->current_mxcsr |= 1 << 2;
-    }
-    else if (code == EXCEPTION_FLT_DENORMAL_OPERAND)
-    {
-        mask = 1 << 8;
-        instruction->current_mxcsr |= 1 << 1;
+        return EXCEPTION_EXECUTE_HANDLER;
     }
     else
     {
         return EXCEPTION_CONTINUE_SEARCH;
     }
-    instruction->current_mxcsr |= mask;
+}
+
+inline double fdiv64_no_exception(double a, double b)
+{
+    __m128d ma = _mm_set1_pd(a);
+    __m128d mb = _mm_set1_pd(b);
+    __m128d mc = _mm_div_pd(ma, mb);
+    return _mm_cvtsd_f64(mc);
+}
+
+inline float fdiv32_no_exception(float a, float b)
+{
+    __m128 ma = _mm_set1_ps(a);
+    __m128 mb = _mm_set1_ps(b);
+    __m128 mc = _mm_div_ps(ma, mb);
+    return _mm_cvtss_f32(mc);
+}
+
+inline void float_save_and_prepare_csr(struct FloatInstruction *instruction)
+{
+    instruction->saved_mxcsr = _mm_getcsr();
     _mm_setcsr(0x1F80);
-    instruction->evaluate(instruction);
+}
+
+inline void float_update_and_restore_csr(struct FloatInstruction *instruction)
+{
+    instruction->previous_mxcsr = instruction->current_mxcsr;
+    uint32_t diff = _mm_getcsr() ^ 0x1F80;
+    instruction->current_mxcsr |= diff << 7 | diff;
     _mm_setcsr(instruction->current_mxcsr);
-    return EXCEPTION_EXECUTE_HANDLER;
 }
 
-void fdiv64_no_exception(struct FloatInstruction *instruction)
+void test_double_div64_c(
+    struct FloatInstruction *instruction,
+    const double *a,
+    const double *b,
+    double *c,
+    uint32_t *csr,
+    size_t len,
+    size_t count)
 {
-    __m128d ma = _mm_set1_pd(instruction->operands_f64[1]);
-    __m128d mb = _mm_set1_pd(instruction->operands_f64[2]);
-    __try
+    for (int j = 0; j < count; ++j)
     {
-        __m128d mc = _mm_div_pd(ma, mb);
-        instruction->operands_f64[0] = _mm_cvtsd_f64(mc);
-    }
-    __except (float_handle_exception(GetExceptionInformation(), instruction))
-    {
+        int i = 0;
+        for (;;)
+        {
+            __try
+            {
+                for (i; i < len;)
+                {
+                    // NOTE: Directly calling to function is faster than function pointer.
+                    c[i] = fdiv64_no_exception(a[i], b[i]);
+                    csr[i] = instruction->current_mxcsr;
+                    ++i;
+                }
+                break;
+            }
+            __except (float_handle_exception(GetExceptionCode()))
+            {
+                float_save_and_prepare_csr(instruction);
+                c[i] = fdiv64_no_exception(a[i], b[i]);
+                float_update_and_restore_csr(instruction);
+                csr[i] = instruction->current_mxcsr;
+                ++i;
+            }
+        }
     }
 }
 
-void fdiv32_no_exception(struct FloatInstruction *instruction)
+void test_double_div32_c(
+    struct FloatInstruction *instruction,
+    const float *a,
+    const float *b,
+    float *c,
+    uint32_t *csr,
+    size_t len,
+    size_t count)
 {
-    __m128 ma = _mm_set1_ps(instruction->operands_f32[1]);
-    __m128 mb = _mm_set1_ps(instruction->operands_f32[2]);
-
-    __try
+    for (int j = 0; j < count; ++j)
     {
-        __m128 mc = _mm_div_ps(ma, mb);
-        instruction->operands_f32[0] = _mm_cvtss_f32(mc);
-    }
-    __except (float_handle_exception(GetExceptionInformation(), instruction))
-    {
+        int i = 0;
+        for (;;)
+        {
+            __try
+            {
+                for (i; i < len;)
+                {
+                    c[i] = fdiv32_no_exception(a[i], b[i]);
+                    csr[i] = instruction->current_mxcsr;
+                    ++i;
+                }
+                break;
+            }
+            __except (float_handle_exception(GetExceptionCode()))
+            {
+                float_save_and_prepare_csr(instruction);
+                c[i] = fdiv32_no_exception(a[i], b[i]);
+                float_update_and_restore_csr(instruction);
+                csr[i] = instruction->current_mxcsr;
+                ++i;
+            }
+        }
     }
 }
