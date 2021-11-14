@@ -16,10 +16,15 @@ cargo rustc --release -- --emit asm
  */
 
 /*
-00011111 10100000
-00011111 10000000
+    1111 10100000
+
+10000000 01000000
+00011111 10000000 // init value
+00001111 10000000 // init value wihtout inexact
 54321098 76543210
 01100000 00000000
+
+00000000 00000000  // init value enable all exception, default round mode, Disable `Flush To Zero`  and disable Denormals Are Zero
 */
 
 /*
@@ -49,15 +54,31 @@ IE	bit 0	Invalid Operation Flag
 type InstructionEvaluate = unsafe extern "C" fn(instruction: &mut FloatInstruction);
 
 #[repr(C)]
-#[derive(Default)]
 pub struct FloatInstruction {
     pub operands_f64: [f64; 32],
-    pub operands_f32: [f32; 32],
-    pub evaluate: Option<InstructionEvaluate>,
+    pub operands_f32: [f32; 64],
+    pub recover_mxcsr: u32,
     pub init_mxcsr: u32,
     pub current_mxcsr: u32,
+    pub evaluate: Option<InstructionEvaluate>,
+    rip: u64,
+    rsp: u64,
 }
 
+impl Default for FloatInstruction {
+    fn default() -> FloatInstruction {
+        FloatInstruction {
+            operands_f64: [0.0; 32],
+            operands_f32: [0.0; 64],
+            recover_mxcsr: 0,
+            init_mxcsr: 0,
+            current_mxcsr: 0,
+            evaluate: None,
+            rip: 0,
+            rsp: 0,
+        }
+    }
+}
 extern "C" {
     pub fn fdiv64_no_exception(instruction: &mut FloatInstruction);
     pub fn fdiv32_no_exception(instruction: &mut FloatInstruction);
@@ -89,60 +110,84 @@ pub extern "C" fn fdiv32(instruction: &mut FloatInstruction) {
     }
 }
 
-fn test_double_div64(instruction: &mut FloatInstruction, a: &[f64], b: &[f64], c: &mut [f64]) {
+fn test_double_div64(
+    instruction: &mut FloatInstruction,
+    a: &[f64],
+    b: &[f64],
+    c: &mut [f64],
+    csr: &mut [u32],
+    count: usize,
+) {
     let now = Instant::now();
     let ops = a.len();
     unsafe {
-        instruction.current_mxcsr = _mm_getcsr();
+        instruction.current_mxcsr = instruction.init_mxcsr;
         _mm_setcsr(instruction.init_mxcsr);
     }
     if let Some(f) = instruction.evaluate {
-        for i in 0..ops {
-            instruction.operands_f64[1] = a[i];
-            instruction.operands_f64[2] = b[i];
-            unsafe {
-                f(instruction);
+        for _ in 0..count {
+            for i in 0..ops {
+                instruction.operands_f64[1] = a[i];
+                instruction.operands_f64[2] = b[i];
+                unsafe {
+                    f(instruction);
+                }
+                c[i] = instruction.operands_f64[0];
+                csr[i] = instruction.current_mxcsr;
             }
-            c[i] = instruction.operands_f64[0];
         }
     }
     unsafe {
-        instruction.current_mxcsr = _mm_getcsr();
+        _mm_setcsr(instruction.recover_mxcsr);
     }
-    let mflops = ops as f64 / 1024.0 / 1024.8;
+    let mops = (ops * count) as f64 / 1024.0 / 1024.8;
+    let mflops = mops / now.elapsed().as_secs_f64();
+    println!("recover_mxcsr: {}", instruction.recover_mxcsr);
     println!(
         "final f64 csr: {} mflops:{} c:{}",
         instruction.current_mxcsr,
-        mflops / now.elapsed().as_secs_f64(),
+        mflops,
         c[1024 * 1024]
     );
 }
 
-fn test_double_div32(instruction: &mut FloatInstruction, a: &[f32], b: &[f32], c: &mut [f32]) {
+fn test_double_div32(
+    instruction: &mut FloatInstruction,
+    a: &[f32],
+    b: &[f32],
+    c: &mut [f32],
+    csr: &mut [u32],
+    count: usize,
+) {
     let now = Instant::now();
     let ops = a.len();
     unsafe {
-        instruction.current_mxcsr = _mm_getcsr();
+        instruction.current_mxcsr = instruction.init_mxcsr;
         _mm_setcsr(instruction.init_mxcsr);
     }
     if let Some(f) = instruction.evaluate {
-        for i in 0..ops {
-            instruction.operands_f32[1] = a[i];
-            instruction.operands_f32[2] = b[i];
-            unsafe {
-                f(instruction);
+        for _ in 0..count {
+            for i in 0..ops {
+                instruction.operands_f32[1] = a[i];
+                instruction.operands_f32[2] = b[i];
+                unsafe {
+                    f(instruction);
+                }
+                c[i] = instruction.operands_f32[0];
+                csr[i] = instruction.current_mxcsr;
             }
-            c[i] = instruction.operands_f32[0];
         }
     }
     unsafe {
-        instruction.current_mxcsr = _mm_getcsr();
+        _mm_setcsr(instruction.recover_mxcsr);
     }
-    let mflops = ops as f64 / 1024.0 / 1024.8;
+    let mops = (ops * count) as f64 / 1024.0 / 1024.8;
+    let mflops = mops / now.elapsed().as_secs_f64();
+    println!("recover_mxcsr: {}", instruction.recover_mxcsr);
     println!(
         "final f32 csr: {} mflops:{} c:{}",
         instruction.current_mxcsr,
-        mflops / now.elapsed().as_secs_f64(),
+        mflops,
         c[1024 * 1024]
     );
 }
@@ -150,18 +195,17 @@ fn test_double_div32(instruction: &mut FloatInstruction, a: &[f32], b: &[f32], c
 fn main() {
     let mut instruction: FloatInstruction = Default::default();
     unsafe {
-        println!("first csr:{}", _mm_getcsr());
-        // _mm_setcsr((_mm_getcsr() & !0x8040) | 0b100000); // Initially set inexact bit
-        _mm_setcsr(_mm_getcsr() & !0x8040); // Disable `Flush To Zero` and `Denormals Are Zero`
-        instruction.init_mxcsr = _mm_getcsr();
-        println!("init_mxcsr:{}", instruction.init_mxcsr);
+        instruction.recover_mxcsr = _mm_getcsr();
+        println!("recover_mxcsr:{}", instruction.recover_mxcsr);
         asm! {
             "fninit"
         };
+        instruction.init_mxcsr = 0x80;
+        println!("use mxcsr:{}", instruction.init_mxcsr);
     }
     let ops = 1024 * 1024 * 64;
     let mut a64 = vec![6.0f64; ops];
-    let mut b64 = vec![6.0f64; ops];
+    let mut b64 = vec![5.0f64; ops];
     let mut c64 = vec![0.0f64; ops];
     a64[1024 * 1024] = 7.0f64;
     b64[1024 * 1024] = 9.0f64;
@@ -172,38 +216,56 @@ fn main() {
     a32[1024 * 1024] = 7.0f32;
     b32[1024 * 1024] = 9.0f32;
 
-    for _ in 1..8 {
-        println!("no mxcsr");
+    let mut csr = vec![0u32; ops];
+    /*
+    for vi in 0..ops {
+        a64[vi] = vi as f64;
+    }
+    */
 
+    for _ in 0..8 {
+        println!("no mxcsr");
+        instruction.init_mxcsr = 0;
         instruction.evaluate = Some(fdiv64_no_exception);
         test_double_div64(
             &mut instruction,
             a64.as_slice(),
             b64.as_slice(),
             c64.as_mut_slice(),
+            csr.as_mut_slice(),
+            8,
         );
+        instruction.init_mxcsr = 0;
         instruction.evaluate = Some(fdiv32_no_exception);
         test_double_div32(
             &mut instruction,
             a32.as_slice(),
             b32.as_slice(),
             c32.as_mut_slice(),
+            csr.as_mut_slice(),
+            8,
         );
 
         println!("set/get mxcsr");
+        instruction.init_mxcsr = 0x1F80;
         instruction.evaluate = Some(fdiv64);
         test_double_div64(
             &mut instruction,
             a64.as_slice(),
             b64.as_slice(),
             c64.as_mut_slice(),
+            csr.as_mut_slice(),
+            8,
         );
+        instruction.init_mxcsr = 0x1F80;
         instruction.evaluate = Some(fdiv32);
         test_double_div32(
             &mut instruction,
             a32.as_slice(),
             b32.as_slice(),
             c32.as_mut_slice(),
+            csr.as_mut_slice(),
+            8,
         );
     }
 }
