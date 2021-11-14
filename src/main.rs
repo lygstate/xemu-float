@@ -58,15 +58,9 @@ pub struct FloatInstruction {
     pub current_mxcsr: u32,
 }
 
-#[no_mangle]
-#[inline(never)]
-pub extern "C" fn fdiv64_no_exception(instruction: &mut FloatInstruction) {
-    unsafe {
-        let ma = _mm_set1_pd(instruction.operands_f64[1]);
-        let mb = _mm_set1_pd(instruction.operands_f64[2]);
-        let mc = _mm_div_pd(ma, mb);
-        instruction.operands_f64[0] = _mm_cvtsd_f64(mc);
-    }
+extern "C" {
+    pub fn fdiv64_no_exception(instruction: &mut FloatInstruction);
+    pub fn fdiv32_no_exception(instruction: &mut FloatInstruction);
 }
 
 #[no_mangle]
@@ -79,17 +73,6 @@ pub extern "C" fn fdiv64(instruction: &mut FloatInstruction) {
         let mc = _mm_div_pd(ma, mb);
         instruction.operands_f64[0] = _mm_cvtsd_f64(mc);
         instruction.current_mxcsr = _mm_getcsr();
-    }
-}
-
-#[no_mangle]
-#[inline(never)]
-pub extern "C" fn fdiv32_no_exception(instruction: &mut FloatInstruction) {
-    unsafe {
-        let ma = _mm_set1_ps(instruction.operands_f32[1]);
-        let mb = _mm_set1_ps(instruction.operands_f32[2]);
-        let mc = _mm_div_ps(ma, mb);
-        instruction.operands_f32[0] = _mm_cvtss_f32(mc);
     }
 }
 
