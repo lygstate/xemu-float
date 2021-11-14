@@ -87,7 +87,7 @@ void test_double_div64_c(
                 {
                     // NOTE: Directly calling to function is faster than function pointer.
                     c[i] = fdiv64_no_exception(a[i], b[i]);
-                    csr[i] = instruction->current_mxcsr;
+                    // csr[i] = instruction->current_mxcsr;
                     ++i;
                 }
                 break;
@@ -123,7 +123,7 @@ void test_double_div32_c(
                 for (i; i < len;)
                 {
                     c[i] = fdiv32_no_exception(a[i], b[i]);
-                    csr[i] = instruction->current_mxcsr;
+                    // csr[i] = instruction->current_mxcsr;
                     ++i;
                 }
                 break;
