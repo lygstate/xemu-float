@@ -81,7 +81,6 @@ void test_double_div64_c(
         int i = 0;
         for (;;)
         {
-            __try
             {
                 for (i; i < len;)
                 {
@@ -92,6 +91,7 @@ void test_double_div64_c(
                 }
                 break;
             }
+#if 0
             __except (float_handle_exception(GetExceptionCode()))
             {
                 float_save_and_prepare_csr(instruction);
@@ -100,6 +100,7 @@ void test_double_div64_c(
                 csr[i] = instruction->current_mxcsr;
                 ++i;
             }
+#endif
         }
     }
 }
@@ -118,7 +119,6 @@ void test_double_div32_c(
         int i = 0;
         for (;;)
         {
-            __try
             {
                 for (i; i < len;)
                 {
@@ -128,6 +128,7 @@ void test_double_div32_c(
                 }
                 break;
             }
+#if 0
             __except (float_handle_exception(GetExceptionCode()))
             {
                 float_save_and_prepare_csr(instruction);
@@ -136,6 +137,7 @@ void test_double_div32_c(
                 csr[i] = instruction->current_mxcsr;
                 ++i;
             }
+#endif
         }
     }
 }

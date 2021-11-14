@@ -223,7 +223,7 @@ fn main() {
         asm! {
             "fninit"
         };
-        instruction.init_mxcsr = 0x0;
+        instruction.init_mxcsr = 0x1F80;
         println!("use mxcsr:{}", instruction.init_mxcsr);
     }
     let ops = 1024 * 1024 * 64;
@@ -248,7 +248,7 @@ fn main() {
 
     for _ in 0..8 {
         println!("no mxcsr");
-        instruction.init_mxcsr = 0;
+        instruction.init_mxcsr = 0x1F80;
         test_double_div64(
             &mut instruction,
             a64.as_slice(),
@@ -257,7 +257,7 @@ fn main() {
             csr.as_mut_slice(),
             16,
         );
-        instruction.init_mxcsr = 0;
+        instruction.init_mxcsr = 0x1F80;
         test_double_div32(
             &mut instruction,
             a32.as_slice(),
