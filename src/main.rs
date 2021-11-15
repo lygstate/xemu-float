@@ -85,7 +85,6 @@ extern "C" {
 }
 
 #[no_mangle]
-#[inline(never)]
 pub extern "C" fn fdiv64(instruction: &mut FloatInstruction) {
     unsafe {
         _mm_setcsr(instruction.init_mxcsr);
@@ -98,7 +97,6 @@ pub extern "C" fn fdiv64(instruction: &mut FloatInstruction) {
 }
 
 #[no_mangle]
-#[inline(never)]
 pub extern "C" fn fdiv32(instruction: &mut FloatInstruction) {
     unsafe {
         _mm_setcsr(instruction.init_mxcsr);
@@ -127,13 +125,14 @@ fn test_double_div64(
     if let Some(f) = instruction.evaluate {
         for _ in 0..count {
             for i in 0..ops {
-                instruction.operands_f64[1] = a[i];
-                instruction.operands_f64[2] = b[i];
                 unsafe {
-                    f(instruction);
+                    _mm_setcsr(instruction.init_mxcsr);
+                    let ma = _mm_set1_pd(a[i]);
+                    let mb = _mm_set1_pd(b[i]);
+                    let mc = _mm_div_pd(ma, mb);
+                    c[i] = _mm_cvtsd_f64(mc);
+                    csr[i] = _mm_getcsr();
                 }
-                c[i] = instruction.operands_f64[0];
-                csr[i] = instruction.current_mxcsr;
             }
         }
     }
@@ -168,13 +167,14 @@ fn test_double_div32(
     if let Some(f) = instruction.evaluate {
         for _ in 0..count {
             for i in 0..ops {
-                instruction.operands_f32[1] = a[i];
-                instruction.operands_f32[2] = b[i];
                 unsafe {
-                    f(instruction);
+                    _mm_setcsr(instruction.init_mxcsr);
+                    let ma = _mm_set1_ps(a[i]);
+                    let mb = _mm_set1_ps(b[i]);
+                    let mc = _mm_div_ps(ma, mb);
+                    c[i] = _mm_cvtss_f32(mc);
+                    csr[i] = _mm_getcsr();
                 }
-                c[i] = instruction.operands_f32[0];
-                csr[i] = instruction.current_mxcsr;
             }
         }
     }
@@ -225,7 +225,7 @@ fn main() {
 
     for _ in 0..8 {
         println!("no mxcsr");
-        instruction.init_mxcsr = 0;
+        instruction.init_mxcsr = 0x1F80;
         instruction.evaluate = Some(fdiv64_no_exception);
         test_double_div64(
             &mut instruction,
@@ -235,7 +235,7 @@ fn main() {
             csr.as_mut_slice(),
             8,
         );
-        instruction.init_mxcsr = 0;
+        instruction.init_mxcsr = 0x1F80;
         instruction.evaluate = Some(fdiv32_no_exception);
         test_double_div32(
             &mut instruction,
